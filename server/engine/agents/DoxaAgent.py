@@ -534,11 +534,15 @@ OTHERS: {other_agents}
                 return "FAILED: No market engine configured."
             p = me.get_price(resource)
             return f"Current price for {resource}: {p}" if p is not None else f"FAILED: No market for {resource}."
-        def get_order_book(resource: str) -> str:
+        def get_order_book(resource: str = None) -> str:
             """Get the top-of-book bids and asks for a resource (depth 5)."""
             me = getattr(self.env, 'market_engine', None)
             if not me:
                 return "FAILED: No market engine configured."
+            if not resource:
+                available = ', '.join(me.markets.keys())
+                return f"FAILED: Missing required argument 'resource'. Available markets: {available}"
+            resource = resource.split('/')[0].strip()
             book = me.get_order_book(resource, depth=5)
             if not book:
                 return f"FAILED: No market for {resource}."
@@ -580,7 +584,7 @@ OTHERS: {other_agents}
                 return "FAILED: No RAG memory for this agent."
             import asyncio
             async def do_query():
-                results = await memory.query(query, k=top_k)
+                results = await memory.query(query, n_results=top_k)
                 if not results:
                     return "No relevant knowledge found."
                 return "\n".join([f"[{i+1}] {mc.content}" for i, mc in enumerate(results)])
@@ -603,10 +607,12 @@ OTHERS: {other_agents}
         available_tools += [evaluate_trade_utility, evaluate_order_utility]
         if can_trade and trading_mode in ('otc', 'both'):
             available_tools += [make_trade_offer, accept_trade, reject_trade]
+        if can_trade:
+            available_tools += [get_market_price, get_order_book]
         if can_trade and trading_mode in ('lob', 'both'):
             available_tools += [place_buy_order, place_sell_order,
                                 place_market_buy_order, place_market_sell_order,
-                                cancel_order, get_market_price, get_order_book]
+                                cancel_order]
         if can_think:
             available_tools.append(think)
         if can_chat:

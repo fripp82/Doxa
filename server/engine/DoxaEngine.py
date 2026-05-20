@@ -1097,7 +1097,10 @@ Summary:"""
         import json, os
         cp_dir = self.global_rules.get('checkpoint_path', './checkpoints/')
         os.makedirs(cp_dir, exist_ok=True)
-        scenario = os.path.splitext(os.path.basename(str(self.config_source.get('value', 'simulation'))))[0]
+        if self.config_source.get('kind') == 'path':
+            scenario = os.path.splitext(os.path.basename(str(self.config_source['value'])))[0]
+        else:
+            scenario = self.raw_config.get('scenario', 'simulation')
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in scenario)
         filename = f"{safe}_ep{self.current_epoch}_step{self.current_step:04d}.json"
         path = os.path.join(cp_dir, filename)
@@ -1314,8 +1317,10 @@ Summary:"""
                     multiplier = args.get('multiplier', args.get('inputMultiplier', 1))
                     function_name = ftc['name']
                     function_ref = getattr(agent, function_name, None) or agent._function_map.get(function_name)
+                    if not function_ref:
+                        function_ref = agent._function_map.get(f"op_{function_name}")
                     if not function_ref and function_name != name:
-                        function_ref = getattr(agent, name, None) or agent._function_map.get(name)
+                        function_ref = getattr(agent, name, None) or agent._function_map.get(name) or agent._function_map.get(f"op_{name}")
                     if function_ref:
                         try:
                             res = function_ref(**args) if args else function_ref()
