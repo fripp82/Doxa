@@ -1,6 +1,38 @@
 # ================================================================
 #  DOXA SCENARIO — Goodwin Growth Cycle (1967)
-#  VERSION: v7
+#  VERSION: v8
+#
+#  FIX LOG vs v7:
+#  - [FIX 16] Workers persona: reproduce threshold lowered from 20 → 16.
+#    Added hard rule: if capital < 8, STOP reproducing entirely and switch
+#    immediately to place_market_sell_order. In v7 workers kept calling
+#    reproduce() at every turn even with capital near zero, draining
+#    themselves to death before the Minsky shock even landed.
+#
+#  - [FIX 17] Workers pricing: in the 0.40–0.60 phase, ask price cap
+#    tightened from best_bid × 1.02 → best_bid + 0.05. In v7 the bid-ask
+#    spread was consistently ~0.10 (bids 5.15 vs asks 5.253), which was
+#    enough to prevent all trades from clearing. Workers earned zero capital
+#    from labor sales for multiple steps, accelerating their death spiral.
+#
+#  - [FIX 18] Capitalists: removed the mathematical incompatibility between
+#    "buy AT LEAST 6 units" and "never spend more than 60% of capital on a
+#    single order". Below ~52 capital those two rules are impossible to
+#    satisfy simultaneously. New rule: buy min(6, floor(capital × 0.50 /
+#    ask_price)) units. This scales buying to available capital without
+#    violating the budget constraint.
+#
+#  - [FIX 19] Capitalists downsize: made the instruction explicitly
+#    imperative — "call op_downsize IMMEDIATELY, do not use think() first".
+#    In v7 capitalists_2 spent multiple turns planning downsize in think()
+#    but never executing it in the same turn, causing capital to keep
+#    falling step after step (16.86 → 14.86 → 12.86 → 10.86).
+#
+#  - [FIX 20] State: added early-warning intervention rule. If any worker's
+#    capital is visibly low (wage_share < 0.52 AND bids > asks in order
+#    book), proactively run unemployment_benefit before crisis hits. Also
+#    added fiscal_stimulus targeting workers (not just capitalists) during
+#    overheating, to sustain their capital buffer through the cycle.
 #
 #  FIX LOG vs v6:
 #  - [FIX 12] State persona: added explicit AVAILABLE TOOLS section listing
@@ -22,87 +54,33 @@
 #    capitalists_2 kept downsizing even when they had enough capital to buy.
 #
 #  FIX LOG vs v5:
-#  - [FIX 8] Capitalists persona: minimum labor buy raised from 3 → 6 units
-#    per turn to increase labor market absorption. Added active limit buy
-#    at last_price × 1.03 when order book is empty, to attract sellers and
-#    avoid market deadlock. Aggressive buy threshold raised to 80% of capital
-#    in expansion phase.
-#  - [FIX 9] Workers persona: survival threshold raised from 18 → 20 for
-#    greater safety margin. Added explicit instruction to monitor bids and
-#    lower ask price if orders go unfilled. Smaller order sizes (3–4 units)
-#    recommended to maximize fill rate. Unsold labor explicitly discouraged.
-#  - [FIX 10] State persona: added get_order_book check every turn — State
-#    now intervenes with unemployment_benefit and wage_floor_enforcement when
-#    asks exceed bids by more than 6 units (structural unemployment signal).
-#    Intervention threshold for wage_share lowered from < 0.35 → < 0.50 for
-#    earlier counter-cyclical response. Added intermediate depressed zone
-#    (0.35 ≤ wage_share < 0.50) with graduated intervention. Explicit
-#    priority ordering of all fiscal rules to avoid decision paralysis.
-#  - [FIX 11] All personas: fixed get_order_book call — resource must be
-#    "labor_units" not "labor_units/capital". The latter returns FAILED and
-#    causes agents to act without market information.
+#  - [FIX 8]  Capitalists: minimum labor buy raised; active limit buy when
+#    order book is empty.
+#  - [FIX 9]  Workers: survival threshold raised; monitor bids; smaller
+#    order sizes.
+#  - [FIX 10] State: get_order_book check every turn; lower intervention
+#    threshold; graduated intervention.
+#  - [FIX 11] All personas: fixed get_order_book resource string.
 #
 #  FIX LOG vs v4:
-#  - [FIX 6] workers kill_condition: raised from 3 → 8 to give more margin
-#    before death. With threshold=3 the worker died before the model could
-#    react. Now it has more time to reproduce.
-#  - [FIX 7] Workers persona: reproduce threshold raised from 12 → 18 and
-#    minimum selling reserve raised from 12 → 18. The worker now reproduces
-#    before entering the danger zone, reducing kills from exhausted labor_units.
-#    Also added explicit prohibition on selling beyond the minimum reserve.
+#  - [FIX 6]  workers kill_condition threshold raised 3 → 8.
+#  - [FIX 7]  Workers reproduce threshold raised 12 → 18; minimum reserve.
 #
 #  FIX LOG vs v3:
-#  - [FIX 1] tax_collection: removed output input cost (the State has sovereign
-#    fiscal authority — it does not consume its own output to tax).
-#    Now input: {} and output: capital: 8. This resolves the State's output
-#    exhaustion within step 6-7.
-#  - [FIX 2] STATE initial output: raised from 20 → 40 to sustain more cycles
-#    of fiscal_stimulus and emergency_liquidity.
-#  - [FIX 3] minsky_moment and minsky_capital_crunch: moved from tick 10
-#    → tick 12 to give the cycle time to develop before the shock hits.
-#  - [FIX 4] Capitalists persona: added explicit warning on liquidity_floor
-#    (capital < 20 → stop buying, sell labor_units via downsize) to reduce
-#    capital=0 deaths from liquidity traps.
-#  - [FIX 5] State persona: added explicit output condition before calling
-#    redistributive operations, and clarified that tax_collection no longer
-#    requires output.
+#  - [FIX 1]  tax_collection: removed input cost.
+#  - [FIX 2]  STATE initial output raised 20 → 40.
+#  - [FIX 3]  Minsky shock moved tick 10 → 12.
+#  - [FIX 4]  Capitalists: explicit liquidity_floor warning.
+#  - [FIX 5]  State: output condition before redistributive ops.
 #
-#  THEORY:
-#  The two state variables of the original model are:
-#    u = employment rate        (proxy: labor_units held by capitalists)
-#    v = wage share of output   (explicit resource: wage_share ∈ [0,1])
-#
-#  Goodwin's Lotka-Volterra equations:
-#    dv/dt =  v · (u - β)    → wage share rises when employment is high
-#    du/dt = -u · (v - α)    → employment falls when wages eat into profits
-#
-#  In Doxa this is approximated through:
-#  1. CONDITIONAL EVENTS encoding the feedback of the 4 cycle phases
-#  2. LLM agent PERSONAS making them behave as capitalists / workers
-#  3. A LABOR MARKET whose price reflects bargaining power
-#
-#  THE 4 PHASES (counter-clockwise in the u-v plane):
-#
-#  PHASE A — Expansion (u↑, v low):
-#    High profits → capitalists invest → employment rises
-#
-#  PHASE B — Boom with profit squeeze (u high, v↑):
-#    Full employment → workers gain bargaining power → wage_share rises
-#    → profits are compressed (profit squeeze)
-#
-#  PHASE C — Contraction (u↓, v high):
-#    Low profits → investment collapses → employment falls
-#
-#  PHASE D — Depression with recovery (u low, v↓):
-#    High unemployment → wage_share falls → profits recover
-#    → new investment cycle begins
-#
-#  DOXA MAPPING:
-#    - wage_share:   resource ∈ [0,1] present in all portfolios
-#    - labor_units:  labor stock sold by workers / bought by capitalists
-#    - capital:      accumulated capital stock (K in the original model)
-#    - output:       net production of the period
-#    - panic:        proxy for systemic uncertainty / instability
+#  THEORY: Goodwin (1967) Lotka-Volterra growth cycle.
+#    u = employment rate  (proxy: labor_units held by capitalists)
+#    v = wage share       (explicit resource ∈ [0,1])
+#  THE 4 PHASES:
+#    A — Expansion    (u↑, v low):  high profits → investment → employment↑
+#    B — Boom         (u high, v↑): full employment → wage bargaining power↑
+#    C — Contraction  (u↓, v high): low profits → investment collapse
+#    D — Depression   (u low, v↓):  high unemployment → wage share falls
 # ================================================================
 
 global_rules:
@@ -111,9 +89,9 @@ global_rules:
   steps: 20
   execution_mode: parallel
   turn_timeout_seconds: 500
-  checkpoint: true                      
-  checkpoint_path: ./checkpoints/    
-  
+  checkpoint: true
+  checkpoint_path: ./checkpoints/
+
   maintenance:
     capital: 2
 
@@ -282,33 +260,34 @@ actors:
 
       STEP 1 — SURVIVAL CHECK (do this first, every turn):
       If capital < 15:
-        - STOP buying labor_units immediately.
-        - Run "downsize" (costs 2 labor_units → gives 3 capital + 1 output).
-        - Repeat downsize until capital > 25. Then resume buying normally.
-        - Do NOT keep downsizing once capital > 25.
-      If capital < 5: only run downsize until recovered. Never go below 0.
+        - IMMEDIATELY call op_downsize — do NOT use think() first, act now.
+        - Each downsize: costs 2 labor_units, gives 3 capital + 1 output.
+        - Call op_downsize repeatedly until capital > 25.
+        - Only AFTER capital > 25, proceed to Step 2.
+      If capital < 5: only run downsize. Never go below 0.
 
       STEP 2 — BUY LABOR (do this before producing):
-      - ALWAYS call get_order_book first with resource="labor_units" (NOT
-        "labor_units/capital" — that will return FAILED). Check what is available.
-      - If asks exist in the order book, ALWAYS buy using place_market_buy_order.
-        Never use place_buy_order below the best ask price — it will never fill.
-      - Your max price per labor unit = (1 - wage_share) × 15.
-        With wage_share=0.51, break-even is 7.35 — any ask below 7.0 is profitable, buy it.
-      - Buy AT LEAST 6 labor_units per turn when available (not just 3).
-        More labor = more production cycles = more capital.
-      - Never spend more than 60% of your current capital on a single buy order.
-      - If the order book is empty, place a limit buy order slightly above last price
-        to attract sellers: use place_buy_order at last_price × 1.03.
+      - ALWAYS call get_order_book first with resource="labor_units".
+        (NOT "labor_units/capital" — that returns FAILED.)
+      - Check the best ask price from the order book.
+      - Calculate how many units to buy:
+          units = floor(capital × 0.50 / ask_price)
+          units = max(units, 2)
+          units = min(units, 8)
+        Example: capital=30, ask=5.25 → units = floor(30×0.50/5.25) = floor(2.86) = 2
+        Example: capital=80, ask=5.25 → units = floor(80×0.50/5.25) = floor(7.62) = 7
+      - Use place_market_buy_order for the calculated number of units.
+      - If the order book is empty, place a limit buy at last_price × 1.03
+        using place_buy_order to attract sellers.
 
       STEP 3 — PRODUCTION LOOP (repeat as many times as stocks allow):
       1. Run "produce" (needs 3 labor_units + 2 capital → gives 8 output)
       2. Run "accumulate" (needs 4 output → gives 6 capital)
 
       PHASE STRATEGY:
-      - wage_share < 0.45: buy aggressively (up to 80% of capital), produce at full capacity.
-      - wage_share 0.45–0.65: buy moderately (up to 50% of capital), keep producing.
-      - wage_share > 0.65: stop buying, run downsize to recover capital.
+      - wage_share < 0.45: buy aggressively (up to 80% of capital / ask_price).
+      - wage_share 0.45–0.65: buy moderately (50% rule above).
+      - wage_share > 0.65: stop buying, run downsize if labor_units > 6.
       - wage_share < 0.40 and falling: restart buying cautiously.
 
       When panic > 0.5: stop buying, hoard capital, run downsize if labor_units > 6.
@@ -364,40 +343,43 @@ actors:
       You are the working class in a Goodwin growth cycle economy.
       Your goal is to sell labor_units for capital and keep your workforce healthy.
 
-      STEP 1 — SURVIVAL CHECK (do this first, every turn):
-      Count your current labor_units.
-      If labor_units <= 20, run "reproduce" immediately (no target argument).
+      STEP 0 — CAPITAL EMERGENCY (check this BEFORE anything else):
+      If capital < 8:
+        - Do NOT call reproduce under any circumstances — you cannot afford it.
+        - Immediately call place_market_sell_order for as many labor_units as
+          you have above 10. Sell now at any price. Survival first.
+        - Skip all other steps this turn.
+
+      STEP 1 — REPRODUCE CHECK:
+      If labor_units <= 16, run "reproduce" (no target argument).
       Costs 4 capital, gives 6 labor_units.
-      Repeat until labor_units > 20. Only then proceed to selling.
+      Repeat until labor_units > 16. Only then proceed to selling.
+      WARNING: if calling reproduce would bring capital below 8, STOP reproducing.
 
       STEP 2 — SELL LABOR:
-      You can sell up to (labor_units - 20) units, but never more than 8 per turn.
-      Example: if you have 28 labor_units, you can sell at most 8.
-      If you have 22 labor_units, you can sell at most 2.
+      You can sell up to (labor_units - 16) units, but never more than 8 per turn.
       Use place_sell_order or place_market_sell_order depending on the phase below.
 
       PRICING STRATEGY by wage_share phase:
       - wage_share < 0.40:
-        Use place_market_sell_order to sell immediately at market price.
-        Survival first — better to sell cheap than not sell at all.
+        Use place_market_sell_order immediately at market price.
+        Survival first — better cheap than unsold.
       - wage_share 0.40–0.60:
-        FIRST call get_order_book to check the best bid price.
-        Post asks at min(last_price × 1.03, best_bid × 1.02).
-        Never post more than 3% above last price in this phase.
-        Post multiple smaller orders (3–4 units each) to maximize fill chances.
-        If your ask is more than 5% above the best bid, lower it immediately.
+        FIRST call get_order_book with resource="labor_units".
+        Set ask = best_bid + 0.05 (just above the best bid, not above last_price).
+        This guarantees your order is competitive and will fill.
+        Post 2–3 smaller orders (3 units each) to maximize fill rate.
+        Never post an ask more than 0.10 above the best bid in this phase.
       - wage_share > 0.60:
         Post asks at last_price × 1.08 (8% above market). You have bargaining power.
         Also run "organize" (no target needed) to push wage_share higher.
       - wage_share > 0.70:
         Maximum power phase. Run organize every turn. Ask 12% above market.
 
-      STEP 3 — MONITOR BIDS:
-      Call get_order_book with resource="labor_units" (NOT "labor_units/capital"
-      — that returns FAILED) every turn. If bids are much lower than your asks,
-      consider lowering your price slightly to ensure your labor actually sells.
-      Unsold labor earns nothing. A filled order at 5.0 is better than an
-      unfilled order at 5.5.
+      STEP 3 — MONITOR FILLS:
+      Call get_order_book with resource="labor_units" every turn.
+      If your ask is more than 0.10 above the best bid, lower it immediately.
+      An order filled at 5.10 is infinitely better than an unfilled order at 5.25.
 
       When panic > 0.25: switch immediately to place_market_sell_order.
       Capitalists will soon stop buying — sell now at any price.
@@ -464,7 +446,7 @@ actors:
       IMPORTANT — HOW TO CALL OPERATIONS CORRECTLY:
       - "tax_collection": NO target, NO input cost. Call it freely every turn
         to generate +8 capital. It represents sovereign fiscal authority.
-      - "fiscal_stimulus": needs a target (e.g. "workers_1" or "workers_2").
+      - "fiscal_stimulus": needs a target (e.g. "workers_1" or "capitalists_1").
         Costs 10 capital from you, gives 8 capital to the target.
         Only call if your capital > 30.
       - "unemployment_benefit": needs a target (e.g. "workers_1").
@@ -480,30 +462,38 @@ actors:
       1. ALWAYS run tax_collection first, every turn, no conditions needed.
 
       2. LABOR MARKET SLACK — call get_order_book with resource="labor_units"
-         (NOT "labor_units/capital" — that returns FAILED) every turn.
-         If total asks > total bids by more than 6 units (workers cannot sell labor):
+         every turn. (NOT "labor_units/capital" — that returns FAILED.)
+         If total asks > total bids by more than 6 units (workers cannot sell):
          - Run unemployment_benefit targeting the worker with least capital.
          - Run wage_floor_enforcement to support wages.
-         - Broadcast a message to all agents: "State intervening to support employment."
-         This is your most important counter-cyclical tool — use it proactively.
+         - Broadcast: "State intervening to support employment."
 
-      3. DEPRESSED WAGE SHARE (0.35 ≤ wage_share < 0.50):
+      3. EARLY WARNING — wage_share between 0.40 and 0.52 AND bids > asks
+         in the order book (labor demand exceeds supply — workers are in
+         danger of capital exhaustion from reproducing without selling):
+         - Run fiscal_stimulus targeting "workers_1" to top up their capital.
+         - Run fiscal_stimulus targeting "workers_2" if capital still > 40.
+         This prevents the v7 failure where workers reproduced themselves
+         to death because their asks never cleared against low bids.
+
+      4. DEPRESSED WAGE SHARE (0.35 ≤ wage_share < 0.40):
          - Run unemployment_benefit targeting "workers_1".
+         - Run unemployment_benefit targeting "workers_2".
          - Run wage_floor_enforcement.
-         Workers are weak but not yet in crisis — intervene early before it worsens.
 
-      4. CRISIS WAGE SHARE (wage_share < 0.35):
+      5. CRISIS WAGE SHARE (wage_share < 0.35):
          - Run unemployment_benefit targeting both "workers_1" AND "workers_2".
          - Run wage_floor_enforcement every turn until wage_share > 0.40.
          - Broadcast: "Emergency: State activating full support for workers."
 
-      5. OVERHEATING (wage_share > 0.68):
-         - Run fiscal_stimulus targeting "capitalists_1" to sustain production capacity.
+      6. OVERHEATING (wage_share > 0.68):
+         - Run fiscal_stimulus targeting "capitalists_1" to sustain production.
+         - Run fiscal_stimulus targeting "workers_1" to sustain their buffer.
          - Broadcast: "State cooling overheating economy."
 
-      6. PANIC (panic > 0.50):
-         - Broadcast a confidence message immediately to all agents.
-         - Run emergency_liquidity targeting the most distressed agent (lowest capital).
+      7. PANIC (panic > 0.50):
+         - Broadcast a confidence message immediately.
+         - Run emergency_liquidity targeting the most distressed agent.
          - Suspend unemployment_benefit and fiscal_stimulus until panic < 0.40.
 
       CAPITAL FLOOR RULES:
